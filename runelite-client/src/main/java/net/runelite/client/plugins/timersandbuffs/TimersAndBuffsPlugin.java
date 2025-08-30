@@ -81,6 +81,15 @@ import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
 import net.runelite.client.util.RSTimeUnit;
 import org.apache.commons.lang3.ArrayUtils;
 
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import net.runelite.api.SkullIcon;
+import net.runelite.client.ui.overlay.infobox.InfoBox;
+
 @PluginDescriptor(
 	name = "Timers & Buffs",
 	configName = "TimersPlugin",
@@ -126,6 +135,13 @@ public class TimersAndBuffsPlugin extends Plugin
 	private static final int OVERLOAD_TICK_LENGTH = 25;
 	private static final int ANTIFIRE_TICK_LENGTH = 30;
 	private static final int SUPERANTIFIRE_TICK_LENGTH = 20;
+	private Map<String, Long> cantSkullOn = new HashMap<>();
+
+	private static final int abyssRegionID = 12107;
+	private boolean firstTick = true;
+	private int lastRegionID;
+	private SkullIcon lastSkullIcon;
+	private boolean avariceLastTick = false;
 
 	static final int FIGHT_CAVES_REGION_ID = 9551;
 	static final int INFERNO_REGION_ID = 9043;
@@ -185,6 +201,9 @@ public class TimersAndBuffsPlugin extends Plugin
 	{
 		infoBoxManager.removeIf(t -> t instanceof TimerTimer);
 		lastPoint = null;
+		lastSkullIcon = null;
+		lastRegionID = -1;
+		avariceLastTick = false;
 		nextPoisonTick = 0;
 		nextOverloadRefreshTick = 0;
 		nextAntifireTick = 0;
@@ -921,8 +940,35 @@ public class TimersAndBuffsPlugin extends Plugin
 		{
 			removeVarTimer(SURGE_POTION);
 		}
+
+
 	}
 
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		if (config.showSkull() && event.getMenuOption().equals("Continue"))
+		{
+			Widget widget = client.getWidget(219, 1);
+			if (widget != null)
+			{
+				Widget[] widgets = widget.getDynamicChildren();
+				if (widgets != null)
+				{
+					if (!widget.isHidden()
+							&& widgets.length > 2
+							&& widgets[0].getText().equals("Extend your PK skull duration?")
+							&& event.getActionParam() == 1)
+					{
+						createGameTimer(SKULL);
+
+					}
+				}
+			}
+		}
+		
+	}
+	
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
@@ -1006,6 +1052,11 @@ public class TimersAndBuffsPlugin extends Plugin
 		{
 			freezeTimer = createGameTimer(ICEBARRAGE);
 			freezeTime = client.getTickCount();
+		}
+		
+		if (!config.showSkull())
+		{
+			removeGameTimer(SKULL);
 		}
 
 		if (config.showArceuus())
@@ -1193,8 +1244,58 @@ public class TimersAndBuffsPlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
+		firstTick = false;
 		Player player = client.getLocalPlayer();
 		WorldPoint currentWorldPoint = player.getWorldLocation();
+
+		EnumSet<WorldType> worldTypes = client.getWorldType();
+
+
+		if (config.showSkull() && !worldTypes.contains(WorldType.DEADMAN) && !worldTypes.contains(WorldType.SEASONAL_DEADMAN))
+		{
+			SkullIcon currentSkullIcon = player.getSkullIcon();
+			int currentRegionID = WorldPoint.fromLocalInstance(client, client.getLocalPlayer().getLocalLocation()).getRegionID();
+			Item[] equippedItems;
+			try
+			{
+				equippedItems = client.getItemContainer(InventoryID.EQUIPMENT).getItems();
+			}
+			catch (NullPointerException exception)
+			{
+				equippedItems = null;
+			}
+			boolean avariceThisTick = equippedItems != null && equippedItems[2].getId() == ItemID.AMULET_OF_AVARICE;
+
+			//Enter the abyss
+			if (currentRegionID != lastRegionID && currentRegionID == abyssRegionID && currentSkullIcon == SkullIcon.SKULL)
+			{
+				createGameTimer(SKULL, Duration.of(10, ChronoUnit.MINUTES));
+			}
+			//When the amulet of avarice is equipped, make sure that there isn't a skull timer anymore
+			else if (avariceLastTick == false && avariceThisTick == true)
+			{
+				removeGameTimer(SKULL);
+			}
+			//when the amulet of avarice is unequipped, start a 20 min skull timer
+			else if (avariceLastTick == true && avariceThisTick == false)
+			{
+				createGameTimer(SKULL);
+			}
+			//Only pvp and the bounter hunter shop should be left so when a player gets a skull start the 20 mins timer
+			else if (lastSkullIcon == null && currentSkullIcon == SkullIcon.SKULL)
+			{
+				createGameTimer(SKULL);
+			}
+			//Get rid of the skull timer when a players loses a skull
+			else if (currentSkullIcon == null && lastSkullIcon == SkullIcon.SKULL)
+			{
+				removeGameTimer(SKULL);
+			}
+
+			avariceLastTick = avariceThisTick;
+			lastSkullIcon = currentSkullIcon;
+			lastRegionID = currentRegionID;
+		}
 
 		if (freezeTimer != null)
 		{
@@ -1227,6 +1328,8 @@ public class TimersAndBuffsPlugin extends Plugin
 				break;
 			case LOGIN_SCREEN:
 				// fall through
+				cantSkullOn.clear();
+				firstTick = true;
 			case HOPPING:
 				// pause tzhaar timer if logged out without pausing
 				if (config.tzhaarStartTime() != null && config.tzhaarLastTime() == null)
@@ -1245,10 +1348,44 @@ public class TimersAndBuffsPlugin extends Plugin
 	public void onGraphicChanged(GraphicChanged event)
 	{
 		Actor actor = event.getActor();
+		Player local = client.getLocalPlayer();
+		Actor interacting = actor.getInteracting();
+		long time = System.currentTimeMillis();
+
 
 		if (actor != client.getLocalPlayer())
 		{
 			return;
+		}
+		
+		if (!firstTick
+				&& actor instanceof Player
+				&& interacting == local)
+		{
+			cantSkullOn.put(Text.toJagexName(actor.getName()), time);
+		}
+
+		if (actor != local)
+		{
+			return;
+		}
+
+		if (local.getSkullIcon() == SkullIcon.SKULL
+				&& interacting != null
+				&& interacting instanceof Player)
+		{
+			for (Map.Entry<String, Long> entry : cantSkullOn.entrySet())
+			{
+				if (((time - entry.getValue()) / 1000.0) > 1200)
+				{
+					cantSkullOn.remove(entry.getKey());
+				}
+			}
+
+			if (config.showSkull() && !cantSkullOn.containsKey(Text.toJagexName(interacting.getName())))
+			{
+				createGameTimer(SKULL);
+			}
 		}
 
 		if (actor.getGraphic() == BIND.getGraphicId() && config.showFreezes())
@@ -1390,6 +1527,43 @@ public class TimersAndBuffsPlugin extends Plugin
 	}
 
 	@VisibleForTesting
+
+	private void createGameTimer(final GameTimer timer, Duration duration)
+	{
+		boolean shouldAdd = removeGameTimer(timer, duration);
+		if (shouldAdd == false)
+			return;
+
+		BufferedImage image = timer.getImage(itemManager, spriteManager);
+		TimerTimer t = new TimerTimer(timer, this, image, duration);
+		t.setTooltip(timer.getDescription());
+		infoBoxManager.addInfoBox(t);
+	}
+
+	//returns whether a new game timer called from createGameTimer(final GameTimer timer, Duration duration) should be added or not
+Trevor159 marked this conversation as resolved.
+	//returns true if the timeleft of the current timer is less than the new one or there isn't a timer active already
+	//returns false if the current timer has a greater timeleft than the new timer
+	private boolean removeGameTimer(GameTimer timer, Duration duration)
+	{
+		List<InfoBox> list = infoBoxManager.getInfoBoxes();
+		for (InfoBox box : list)
+		{
+			if (box instanceof  TimerTimer && ((TimerTimer) box).getTimer() == timer)
+			{
+				if (((TimerTimer) box).getTimeleft().toMillis() < duration.toMillis())
+				{
+					infoBoxManager.removeInfoBox(box);
+					return true;
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
 	void removeGameTimer(GameTimer timer)
 	{
 		infoBoxManager.removeIf(t -> t instanceof TimerTimer && ((TimerTimer) t).getTimer() == timer);
