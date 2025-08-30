@@ -115,4 +115,9 @@ public class Timer extends InfoBox
 		endTime = Instant.now().plus(duration);
 		this.duration = Duration.between(startTime, endTime);
 	}
+
+	public Duration getTimeleft()
+	{
+		return Duration.between(Instant.now(), endTime);
+	}
 }
