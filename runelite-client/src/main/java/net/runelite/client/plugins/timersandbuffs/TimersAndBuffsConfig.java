@@ -532,4 +532,15 @@ public interface TimersAndBuffsConfig extends Config
 	{
 		return true;
 	}
+
+		@ConfigItem(
+			keyName = "showSkull",
+			name = "Skull timer",
+			description = "Configures whether skull timer is displayed",
+			section = miscellaneousSection
+	)
+	default boolean showSkull()
+	{
+		return true;
+	}
 }
